@@ -3,19 +3,22 @@ import config as _
 import os
 import time
 
+import pyperclip
 from loguru import logger
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 from utils.airtable import get_entries, update_entry
 from utils.selenium import create_driver, quit_driver
-from utils.email import connect, get_all_emails, move_email_to_trash
+from utils.tempmail import create_mailbox, fetch_emails, extract_microsoft_otp
 
 MICROSOFT_LOGIN_URL = 'https://login.live.com/login.srf'
 JUNK_EMAIL = 'https://outlook.live.com/mail/0/options/mail/junkEmail'
-FORWARDING = 'https://outlook.live.com/mail/0/options/mail/forwarding'
+FORWARDING = 'https://outlook.live.com/mail/0/options/mail/rules'
 FEELD_EMAIL = 'noreply@open.feeld.co'
+TAIMI_EMAIL = 'activate@taimi.com'
 
 EMAIL_USER = os.getenv('EMAIL_USER')
 
@@ -25,11 +28,11 @@ def main():
     logger.info('Starting script.')
     
     logger.debug('Fetching entries from Airtable.')
-    entries = get_entries()
+    entries = get_entries()[:20]
 
     logger.debug(f'Fetched {len(entries)} entries from Airtable.')
 
-    for index, entry in enumerate(entries[:3]):
+    for index, entry in enumerate(entries):
 
         logger.info(f'[{index+1}/{len(entries)}] Processing email {entry.get("Email")}')
 
@@ -39,7 +42,9 @@ def main():
 
         driver = create_driver()
 
-        # Logging in and adding recovery email
+        """
+        LOGGING IN AND ADDING RECOVERY EMAIL
+        """
 
         logger.debug(f'[{index+1}/{len(entries)}] Logging in')
         
@@ -99,21 +104,37 @@ def main():
 
             logger.debug(f'[{index+1}/{len(entries)}] Privacy notice accepted.')
 
-        WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable(
-                (By.XPATH, '//button[normalize-space()="Yes"]')
-            )
-        ).click()
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, '//button[normalize-space()="Yes"]')
+                )
+            ).click()
+        except Exception:
+            logger.critical(f'[{index+1}/{len(entries)}] Something went wrong with {entry.get("Email")}. Skipping.')
+            quit_driver()
+            continue
 
         if not entry.get('Recovery Email'):
 
             logger.debug(f'[{index+1}/{len(entries)}] Waiting for recovery email input.')
 
-            WebDriverWait(driver, 15).until(
+            recovery_email_address = create_mailbox().get('email_address')
+
+            if not recovery_email_address:
+                logger.critical(f'[{index+1}/{len(entries)}] Failed to create mailbox. Something is wrong.')
+                quit_driver()
+                continue
+
+            logger.debug(f'[{index+1}/{len(entries)}] Created temporary email: {recovery_email_address}')
+
+            driver.get(JUNK_EMAIL)
+            
+            WebDriverWait(driver, 60).until(
                 EC.visibility_of_element_located(
                     (By.CSS_SELECTOR, '#EmailAddress')
                 )
-            ).send_keys(EMAIL_USER)
+            ).send_keys(recovery_email_address)
             time.sleep(0.2)
             
             WebDriverWait(driver, 5).until(
@@ -124,40 +145,31 @@ def main():
 
             logger.debug(f'[{index+1}/{len(entries)}] Fetching OTP.')
 
-            while True:
-                try:
-                    mail = connect()
-                    break
-                except Exception as e:
-                    time.sleep(5)
-
             verification_code = None
 
+            count = 1
+
             while True:
-                emails = get_all_emails(mail)
-                if not emails:
-                    time.sleep(3)
-                    continue
-                for email in emails:
-                    if email.get('microsoft_otp'):
-                        otp = email.get('microsoft_otp')
-                        print(otp)
-                        email_address = otp.split('-')[0].strip().split('@')[0].strip()
-                        code = otp.split('-')[-1].strip()
-                        print(code)
+                time.sleep(7.5)
+                logger.debug(f'[{index+1}/{len(entries)}] Fetching emails. Attempt {count}')
+                emails = fetch_emails(recovery_email_address).get('emails')
+                if emails:
+                    for email in emails:
+                        if 'microsoft' in email.get('from_address'):
+                            extracted = extract_microsoft_otp(email.get('content'))
+                            if extracted:
+                                email_address = extracted.split('-')[0].strip('[').strip(']').strip()
+                                code = extracted.split('-')[-1].strip()
 
-                        email_start = email_address.split('*')[0]
-                        email_end = email_address.split('*')[-1]
+                                email_start = email_address.split('@')[0].split('*')[0]
+                                email_end = email_address.split('@')[0].split('*')[-1]
 
-                        if entry.get('Email').split('@')[0].strip().startswith(email_start) and entry.get('Email').split('@')[0].strip().endswith(email_end):
-                            verification_code = code
-                            move_email_to_trash(mail, email)
-                            break
+                                if entry.get('Email').split('@')[0].startswith(email_start) and entry.get('Email').split('@')[0].endswith(email_end):
+                                    verification_code = code
+                                    break
 
                 if verification_code:
                     break
-
-                time.sleep(3)
 
             logger.debug(f'[{index+1}/{len(entries)}] OTP: {verification_code}')
 
@@ -175,18 +187,20 @@ def main():
             ).click()
             time.sleep(0.2)
 
-            update_entry(entry.get('id'), {'Recovery Email': EMAIL_USER})
+            update_entry(entry.get('id'), {'Recovery Email': recovery_email_address})
 
             logger.debug(f'[{index+1}/{len(entries)}] Recovery email added.')
 
         logger.debug(f'[{index+1}/{len(entries)}] Logged in successfully.')
         
-        # Adding safe sender
+        """
+        ADDING SAFE SENDER
+        """
 
         driver.get(JUNK_EMAIL)
 
         try:
-            WebDriverWait(driver, 20).until(
+            WebDriverWait(driver, 15).until(
                 EC.element_to_be_clickable(
                     (By.XPATH, '//button[normalize-space()="No, thanks"]')
                 )
@@ -198,7 +212,9 @@ def main():
             logger.debug(f'[{index+1}/{len(entries)}] Adding safe sender.')
             driver.get(JUNK_EMAIL)
 
-            WebDriverWait(driver, 20).until(
+            # Adding FEELD email
+
+            WebDriverWait(driver, 60).until(
                 EC.element_to_be_clickable(
                     (By.XPATH, '//button[normalize-space()="Add safe sender"]')
                 )
@@ -219,6 +235,52 @@ def main():
             ).click()
             time.sleep(0.2)
 
+            # Adding TAIMI email
+
+            WebDriverWait(driver, 20).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, '//button[normalize-space()="Add safe sender"]')
+                )
+            ).click()
+            time.sleep(0.2)
+
+            WebDriverWait(driver, 5).until(
+                EC.visibility_of_all_elements_located(
+                    (By.CSS_SELECTOR, '.fui-Input__input')
+                )
+            )[-1].send_keys(TAIMI_EMAIL)
+            time.sleep(0.2)
+
+            WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, '//button[normalize-space()="OK"]')
+                )
+            ).click()
+            time.sleep(0.2)
+
+            # Adding kartik.aggarwal117@gmail.com
+
+            WebDriverWait(driver, 20).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, '//button[normalize-space()="Add safe sender"]')
+                )
+            ).click()
+            time.sleep(0.2)
+
+            WebDriverWait(driver, 5).until(
+                EC.visibility_of_all_elements_located(
+                    (By.CSS_SELECTOR, '.fui-Input__input')
+                )
+            )[-1].send_keys('kartik.aggarwal117@gmail.com')
+            time.sleep(0.2)
+
+            WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, '//button[normalize-space()="OK"]')
+                )
+            ).click()
+            time.sleep(0.2)
+
             WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable(
                     (By.XPATH, '//button[normalize-space()="Save"]')
@@ -230,7 +292,9 @@ def main():
 
             logger.debug(f'[{index+1}/{len(entries)}] Safe sender added.')
 
-        # Adding forwarding email
+        """
+        ADDING FORWARDING EMAIL
+        """
 
         if not entry.get('Forwarded Email'):
 
@@ -238,33 +302,73 @@ def main():
 
             driver.get(FORWARDING)
 
-            WebDriverWait(driver, 30).until(
+            WebDriverWait(driver, 60).until(
                 EC.element_to_be_clickable(
-                    (By.CSS_SELECTOR, '.fui-Switch')
+                    (By.XPATH, '//button[normalize-space()="Add new rule"]')
+                )
+            ).click()
+            time.sleep(0.2)
+
+            # Name
+
+            WebDriverWait(driver, 5).until(
+                EC.visibility_of_element_located(
+                    (By.CSS_SELECTOR, '.ms-TextField-field')
+                )
+            ).send_keys('Forward all emails')
+            time.sleep(0.2)
+
+            # Condition
+
+            WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, '.ms-ComboBox-CaretDown-button')
                 )
             ).click()
             time.sleep(0.2)
 
             WebDriverWait(driver, 5).until(
-                EC.visibility_of_all_elements_located(
-                    (By.CSS_SELECTOR, '.fui-Input__input')
+                EC.element_to_be_clickable(
+                    (By.XPATH, '//button[normalize-space()="Apply to all messages"]')
                 )
-            )[-1].send_keys(EMAIL_USER)
+            ).click()
             time.sleep(0.2)
+
+            # Action
 
             WebDriverWait(driver, 5).until(
                 EC.presence_of_all_elements_located(
-                    (By.CSS_SELECTOR, '.ms-Checkbox-checkbox')
+                    (By.CSS_SELECTOR, '.ms-ComboBox-CaretDown-button')
                 )
             )[-1].click()
             time.sleep(0.2)
 
             WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable(
-                    (By.XPATH, '//button[normalize-space()="Save"]')
+                    (By.XPATH, '//button[normalize-space()="Forward to"]')
                 )
             ).click()
             time.sleep(0.2)
+
+            value_field = WebDriverWait(driver, 5).until(
+                EC.visibility_of_element_located(
+                    (By.CSS_SELECTOR, '.EditorClass')
+                )
+            )
+
+            value_field.click()
+            time.sleep(0.2)
+
+            pyperclip.copy(EMAIL_USER)
+
+            value_field.send_keys(Keys.CONTROL, 'v')
+
+            WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable(
+                    (By.XPATH, '//button[normalize-space()="Save"]')
+                )
+            ).click()
+            time.sleep(3)
 
             update_entry(entry.get('id'), {'Forwarded Email': EMAIL_USER})
 
@@ -273,10 +377,6 @@ def main():
         update_entry(entry.get('id'), {'Prepared': True})
 
         quit_driver()
-
-        logger.info('Waiting for 10 seconds before next entry.')
-
-        time.sleep(10)
 
 
 if __name__ == '__main__':

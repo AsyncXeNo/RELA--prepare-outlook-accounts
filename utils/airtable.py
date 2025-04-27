@@ -6,6 +6,7 @@ BASE_ID = os.getenv('AIRTABLE_BASE_ID')
 AIRTABLE_API = api.Api(AIRTABLE_API_KEY)
 
 TABLE_NAME = 'Outlook Emails 2nd Batch'
+# TABLE_NAME = 'Outlook Emails'
 
 
 def get_entries() -> list[dict]:

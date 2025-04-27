@@ -3,3 +3,4 @@ webdriver-manager
 loguru
 pyairtable
 python-dotenv
+pyperclip
