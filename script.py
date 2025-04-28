@@ -29,7 +29,7 @@ def main():
     logger.info('Starting script.')
     
     logger.debug('Fetching entries from Airtable.')
-    entries = get_entries()[:5]
+    entries = get_entries()
 
     logger.debug(f'Fetched {len(entries)} entries from Airtable.')
 
@@ -152,9 +152,10 @@ def main():
 
                 verification_code = None
 
-                count = 1
+                count = 0
 
                 while True:
+                    count += 1
                     time.sleep(7.5)
                     logger.debug(f'[{index+1}/{len(entries)}] Fetching emails. Attempt {count}')
                     emails = fetch_emails(recovery_email_address).get('emails')
