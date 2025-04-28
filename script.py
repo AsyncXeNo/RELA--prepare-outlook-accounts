@@ -29,7 +29,7 @@ def main():
     logger.info('Starting script.')
     
     logger.debug('Fetching entries from Airtable.')
-    entries = get_entries()[:10]
+    entries = get_entries()
 
     logger.debug(f'Fetched {len(entries)} entries from Airtable.')
 
