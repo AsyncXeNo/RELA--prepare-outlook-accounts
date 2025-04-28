@@ -29,7 +29,7 @@ def main():
     logger.info('Starting script.')
     
     logger.debug('Fetching entries from Airtable.')
-    entries = get_entries()
+    entries = get_entries()[:10]
 
     logger.debug(f'Fetched {len(entries)} entries from Airtable.')
 
@@ -119,83 +119,95 @@ def main():
                 continue
 
             if not entry.get('Recovery Email'):
-
-                logger.debug(f'[{index+1}/{len(entries)}] Waiting for recovery email input.')
-
-                recovery_email_address = create_mailbox().get('email_address')
-
-                if not recovery_email_address:
-                    logger.critical(f'[{index+1}/{len(entries)}] Failed to create mailbox. Something is wrong.')
-                    quit_driver()
-                    continue
-
-                logger.debug(f'[{index+1}/{len(entries)}] Created temporary email: {recovery_email_address}')
-
-                time.sleep(1)
-
-                driver.get(JUNK_EMAIL)
                 
-                WebDriverWait(driver, 60).until(
-                    EC.visibility_of_element_located(
-                        (By.CSS_SELECTOR, '#EmailAddress')
-                    )
-                ).send_keys(recovery_email_address)
-                time.sleep(0.2)
-                
-                WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable(
-                        (By.CSS_SELECTOR, '#iNext')
-                    )
-                ).click()
+                try:
 
-                logger.debug(f'[{index+1}/{len(entries)}] Fetching OTP.')
+                    logger.debug(f'[{index+1}/{len(entries)}] Waiting for recovery email input.')
 
-                verification_code = None
+                    recovery_email_address = create_mailbox().get('email_address')
 
-                count = 0
+                    if not recovery_email_address:
+                        logger.critical(f'[{index+1}/{len(entries)}] Failed to create mailbox. Something is wrong.')
+                        quit_driver()
+                        continue
 
-                while True:
-                    count += 1
-                    time.sleep(7.5)
-                    logger.debug(f'[{index+1}/{len(entries)}] Fetching emails. Attempt {count}')
-                    emails = fetch_emails(recovery_email_address).get('emails')
-                    if emails:
-                        for email in emails:
-                            if 'microsoft' in email.get('from_address'):
-                                extracted = extract_microsoft_otp(email.get('content'))
-                                if extracted:
-                                    email_address = extracted.split('-')[0].strip('[').strip(']').strip()
-                                    code = extracted.split('-')[-1].strip()
+                    logger.debug(f'[{index+1}/{len(entries)}] Created temporary email: {recovery_email_address}')
 
-                                    email_start = email_address.split('@')[0].split('*')[0]
-                                    email_end = email_address.split('@')[0].split('*')[-1]
+                    time.sleep(1)
 
-                                    if entry.get('Email').split('@')[0].startswith(email_start) and entry.get('Email').split('@')[0].endswith(email_end):
-                                        verification_code = code
-                                        break
+                    try:
+                        WebDriverWait(driver, 10).until(
+                            EC.visibility_of_element_located(
+                                (By.CSS_SELECTOR, '#EmailAddress')
+                            )
+                        ).send_keys(recovery_email_address)
+                        time.sleep(0.2)
+                    except Exception:
+                        driver.get(JUNK_EMAIL)
+                        WebDriverWait(driver, 15).until(
+                            EC.visibility_of_element_located(
+                                (By.CSS_SELECTOR, '#EmailAddress')
+                            )
+                        ).send_keys(recovery_email_address)
+                    
+                    WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable(
+                            (By.CSS_SELECTOR, '#iNext')
+                        )
+                    ).click()
 
-                    if verification_code:
-                        break
+                    logger.debug(f'[{index+1}/{len(entries)}] Fetching OTP.')
 
-                logger.debug(f'[{index+1}/{len(entries)}] OTP: {verification_code}')
+                    verification_code = None
 
-                WebDriverWait(driver, 10).until(
-                    EC.visibility_of_element_located(
-                        (By.CSS_SELECTOR, '#iOttText')
-                    )
-                ).send_keys(verification_code)
-                time.sleep(0.2)
+                    count = 0
 
-                WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable(
-                        (By.CSS_SELECTOR, '#iNext')
-                    )
-                ).click()
-                time.sleep(0.2)
+                    while True:
+                        count += 1
+                        time.sleep(7.5)
+                        logger.debug(f'[{index+1}/{len(entries)}] Fetching emails. Attempt {count}')
+                        emails = fetch_emails(recovery_email_address).get('emails')
+                        if emails:
+                            for email in emails:
+                                if 'microsoft' in email.get('from_address'):
+                                    extracted = extract_microsoft_otp(email.get('content'))
+                                    if extracted:
+                                        email_address = extracted.split('-')[0].strip('[').strip(']').strip()
+                                        code = extracted.split('-')[-1].strip()
 
-                update_entry(entry.get('id'), {'Recovery Email': recovery_email_address})
+                                        email_start = email_address.split('@')[0].split('*')[0]
+                                        email_end = email_address.split('@')[0].split('*')[-1]
 
-                logger.debug(f'[{index+1}/{len(entries)}] Recovery email added.')
+                                        if entry.get('Email').split('@')[0].startswith(email_start) and entry.get('Email').split('@')[0].endswith(email_end):
+                                            verification_code = code
+                                            break
+
+                        if verification_code:
+                            break
+
+                    logger.debug(f'[{index+1}/{len(entries)}] OTP: {verification_code}')
+
+                    WebDriverWait(driver, 10).until(
+                        EC.visibility_of_element_located(
+                            (By.CSS_SELECTOR, '#iOttText')
+                        )
+                    ).send_keys(verification_code)
+                    time.sleep(0.2)
+
+                    WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable(
+                            (By.CSS_SELECTOR, '#iNext')
+                        )
+                    ).click()
+                    time.sleep(0.2)
+
+                    update_entry(entry.get('id'), {'Recovery Email': recovery_email_address})
+
+                    logger.debug(f'[{index+1}/{len(entries)}] Recovery email added.')
+
+                except Exception:
+                    logger.warning(f'[{index+1}/{len(entries)}] Failed to add recovery email. Adding NA')
+                    update_entry(entry.get('id'), {'Recovery Email': 'NA'})
 
             logger.debug(f'[{index+1}/{len(entries)}] Logged in successfully.')
             
