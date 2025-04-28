@@ -26,7 +26,7 @@ def create_proxy_extension() -> str:
     manifest_json = '''
 {
   "version": "1.0.0",
-  "manifest_version": 2,
+  "manifest_version": 3,
   "name": "Chrome Proxy",
   "permissions": [
     "proxy",
